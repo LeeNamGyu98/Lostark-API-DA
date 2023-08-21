@@ -9,6 +9,7 @@ import urllib3
 import pandas as pd
 import traceback
 import pprint
+import joblib
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # connection 및 cursor 반환
@@ -16,7 +17,7 @@ def get_db_cursor():
     db = pymysql.connect(host = 'localhost', 
                      port = 3306, 
                      user='root', 
-                     passwd = key['password'],
+                     passwd = admin_key['password'],
                      charset='utf8')
 
     # Create a cursor object
@@ -25,7 +26,7 @@ def get_db_cursor():
     return db, cursor
 
 # db, api key
-def get_key():
+def get_admin_key():
     with open('./key.json', 'r') as file:
         return json.load(file)
     
@@ -158,26 +159,42 @@ def insert_character_data(characterName):
         values = get_profile_values(profile_responses)
         insert_raw_character_data(values)
 
-# 전처리 전 db의 table에서 특정 column의 값을 호출
+# 전처리 전 db의 table에서 특정 column의 값을 반환
 def get_df_raw_table(column, idx=-1):
     db, cursor = get_db_cursor()
-    if idx == -1:
-        sql = f"SELECT characterCode, {column} FROM lostark.raw_character_data_table"
-    else:
+    if idx != -1:
         sql = f"SELECT characterCode, {column} FROM lostark.raw_character_data_table LIMIT {idx}, 5000"
+    else:
+        sql = f"SELECT characterCode, {column} FROM lostark.raw_character_data_table"
+        
     cursor.execute(sql)
     df = pd.DataFrame(cursor.fetchall(), columns=['characterCode', 'data'])
     db.close()
     return df
 
-# 전처리 후 table에서 df 호출
-def get_table_df(tableName):
+# 한 캐릭터의 전체 raw_table 값 반환
+def get_df_all_raw_table(characterName):
+    db, cursor = get_db_cursor()
+    sql = "SHOW COLUMNS FROM lostark.raw_character_data_table"
+    cursor.execute(sql)
+    column_names = [column[0] for column in cursor.fetchall()]
+
+    sql = f"SELECT * FROM lostark.raw_character_data_table WHERE characterName = '{characterName}'"
+    cursor.execute(sql)
+    df = pd.DataFrame(cursor.fetchall(), columns=column_names)
+    db.close()
+    return df
+
+# 전처리한 table에서 df 반환
+def get_table_df(tableName, characterName=''):
     db, cursor = get_db_cursor()
     sql = f"SHOW COLUMNS FROM lostark.{tableName}"
     cursor.execute(sql)
     column_names = [column[0] for column in cursor.fetchall()]
-    
-    sql = f"SELECT * FROM lostark.{tableName}"
+    if characterName == '':
+        sql = f"SELECT * FROM lostark.{tableName}"
+    else:
+        sql = f"SELECT * FROM lostark.{tableName} WHERE characterName = '{characterName}'"
     cursor.execute(sql)
     df = pd.DataFrame(cursor.fetchall(), columns=column_names)
     db.close()
@@ -213,26 +230,41 @@ def print_insert_db_exception(value, e):
     pprint(value)
     print("Current time:", datetime.datetime.now())
 
-
 # sql 삽입할 때 values = [] 안의 내용
-def print_sql_values(table, tableName):
-    return ''.join(f'{get_sql_value(k, tableName)}, ' for k in table.keys())[:-2]
 def get_sql_value(value, tableName):
     return tableName + "['" + value + "']" 
+def print_sql_values(table, tableName):
+    return ''.join(f'{get_sql_value(k, tableName)}, ' for k in table.keys())[:-2]
+
 
 # API setup
-key = get_key()
-headers = {'Authorization': 'Bearer {}'.format(key['api-key'])}
+admin_key = get_admin_key()
+headers = {'Authorization': 'Bearer {}'.format(admin_key['api-key'])}
 timeout = 10
 #api 분당 100회 제한
 duration = 60 / 90
 
 
 
-### 1. profile, stats table ###
+### 1. profile, stats ###
 def insert_profile_stats_table(characterCode, data):
     result = check_code_already_in("profile_table", characterCode)
     if result[0] == 1: return
+
+    ## stats keys
+    stats = {'characterCode' : None,
+                '치명_값':None, '치명_내실증가량':None, '치명_치명타_적중률(%)':None,
+                '특화_값':None, '특화_내실증가량':None, '특화_각성스킬_피해량(%)':None, '특화_효과1':None,
+                '특화_효과2':None, '특화_효과3':None,
+                '제압_값':None, '제압_내실증가량':None, '제압_피해증가량(%)':None,
+                '신속_값':None, '신속_내실증가량':None, '신속_공격속도(%)':None, '신속_이동속도(%)':None,
+                '신속_스킬_재사용대기시간_감소율(%)':None,
+                '인내_값':None, '인내_내실증가량': None, '인내_물리방어력(%)':None, '인내_마법방어력(%)':None,
+                '인내_보호막효과(%)':None, '인내_생명력_회복효과(%)':None,
+                '숙련_값':None, '숙련_내실증가량':None, '숙련_상태이상_공격_지속시간(%)':None,
+                '숙련_상태이상_피해_지속시간(%)':None, '숙련_무력화_피해량(%)':None,
+                '최대생명력_값':None, '최대생명력_체력':None, '최대생명력_생명활성력(%)':None,
+                '공격력_값':None, '공격력_기본공격력':None, '공격력_증감량':None}
 
     cdf = eval(data)
     del cdf['CharacterImage']
@@ -328,7 +360,7 @@ def insert_profile_stats_table(characterCode, data):
         db.rollback()
         db.close()
         print_insert_db_exception(profile, e)
-        return False
+        raise e
     
     # stats_table
     try:  
@@ -363,9 +395,9 @@ def insert_profile_stats_table(characterCode, data):
         db.rollback()
         db.close()
         print_insert_db_exception(stat, e)
-        return False
+        raise e
 
-### 2. avatar table ###
+### 2. avatar  ###
 def return_tendency(text, tendency):
     try:
         # "tendency : " 다음의 숫자 위치
@@ -418,10 +450,22 @@ def set_avatar(avatar, fd, parts):
         print_preprocessing_exception(fd, sk, sv, e)
         raise Exception("preprocessing error")
     
-
 def insert_avatar_table(characterCode, data):
     result = check_code_already_in("avatar_table", characterCode)
     if result[0] == 1: return
+
+    ## avatar keys
+    avatar_parts = ['무기1', '무기2', '머리', '상의1', '상의2', '하의1', '하의2', '얼굴1', '얼굴2', '악기', '이동효과'] 
+    dic_keys = ['grade', 'isInner', 'isSet', 'name', 'avatarType', 'avatarType2', 'availableClass', 
+                'availableTrade', 'attribution', 'statEffect(%)', '매력', '지성', '담력', '친절', 'availableSale', 
+                'dyeable', 'decomposable']
+    avatars = {
+        'characterCode': None,
+    }
+    for part in avatar_parts:
+        for key in dic_keys:
+            avatars[f'{part}_{key}'] = None
+
 
     avatar = avatars.copy()
     avatar['characterCode'] = characterCode
@@ -456,7 +500,7 @@ def insert_avatar_table(characterCode, data):
             elif avatar_type == '':
                 avatar = set_avatar(avatar, fd, '이동효과') 
     except Exception as e:
-        return False
+        raise e
         
     ## Insert DB
     # avatar table
@@ -464,7 +508,7 @@ def insert_avatar_table(characterCode, data):
         db, cursor = get_db_cursor()
         sql = f"""
             INSERT INTO lostark.avatar_table (
-                {''.join(f'`{key}`, ' for key in avatars.keys())[:-2]})
+                {''.join(f'{key}, ' for key in avatars.keys())[:-2]})
             VALUES ({''.join('%s, ' for _ in range(len(avatars.keys())))[:-2]});
             """
         sql = re.sub(r"(\w+_statEffect)\(%\)", r"`\1(%%)`", sql)
@@ -476,12 +520,65 @@ def insert_avatar_table(characterCode, data):
         db.rollback()
         db.close()
         print_insert_db_exception(avatar, e)
-        return False
+        raise e
 
 ### 3. equipment, accessory, speical_equipment ###
 def insert_equipment_accessory_sequipment_table(characterCode, data):
     result = check_code_already_in("equipment_table", characterCode)
     if result[0] == 1: return
+
+    ## equipment keys
+    equipment_parts = ['무기', '투구', '상의', '하의', '어깨', '장갑']
+    accessory_parts = ['목걸이', '귀걸이1', '귀걸이2', '반지1', '반지2'] # + 팔찌, 어빌리티 스톤
+    sequipment_parts = ['나침반','부적','문장']
+    # 무기 장비
+    aedic_keys = ['grade', 'name', 'type', 'quality', 'tier', 'itemLevel', 'ATK', 'AD(%)', 
+                'setName', 'setLevel', 'REXP', 'esther', 'estherEffect','ella', 'reinforcementStep']
+    # 방어구 장비
+    dedic_keys = ['grade', 'name', 'type', 'quality', 'tier', 'itemLevel', 
+                'SAI', 'BDEF', 'BMDEF', 'BHP', 'ADEF', 'AMDEF', 'AHP', 'AHPP',
+                'setName', 'setLevel', 'REXP', 'reinforcementStep',
+                'alchemyName1', 'alchemyName2', 'alchemyPoint1', 'alchemyPoint2']
+    # 악세서리 장비
+    adic_keys = ['grade', 'name', 'quality', 'tier', 'limitLevel', 'availableTrade', 
+                'SAI', 'HP', '치명', '특화', '신속', '제압', '인내', '숙련',
+                'engraving1_name', 'engraving1_point', 'engraving2_name', 'engraving2_point', 
+                'dengraving_name', 'dengraving_point', 'acquirablePlace']
+
+    # 특수장비
+    sedic_keys = ['grade', 'name']
+
+    # 장비
+    equipments = {
+        'characterCode': None,
+    }
+    # 악세서리
+    accessories = {
+        'characterCode': None,
+        '팔찌_grade':None, '팔찌_name':None, '팔찌_tier':None, '팔찌_effect1':None, '팔찌_effect2':None,
+        '팔찌_effect3':None, '팔찌_effect4':None, '팔찌_effect5':None, '팔찌_canRerollNum':None, '팔찌_canGivenNum':None,
+        'AS_grade':None, 'AS_name':None, 'AS_tier':None, 'AS_HP': None, 'AS_BHP':None, 'AS_engraving1_name':None, 
+        'AS_engraving1_point':None, 'AS_engraving2_name':None, 'AS_engraving2_point':None,
+        'AS_dengraving_name':None, 'AS_dengraving_point':None, 'AS_setLevel' :None
+    }
+    # 특수 장비
+    sequipments = {
+        'characterCode':None, 
+    }
+    for part in equipment_parts:
+        if part == '무기':
+            for key in aedic_keys:
+                equipments[f'{part}_{key}'] = None
+        else:
+            for key in dedic_keys:
+                equipments[f'{part}_{key}'] = None
+    for part in accessory_parts:
+        for key in adic_keys:
+            accessories[f'{part}_{key}'] = None
+    for part in sequipment_parts:
+        for key in sedic_keys:
+            sequipments[f'{part}_{key}'] = None
+
     equipment = equipments.copy()
     accessory = accessories.copy()
     sequipment = sequipments.copy()
@@ -733,7 +830,7 @@ def insert_equipment_accessory_sequipment_table(characterCode, data):
                         
     except Exception as e:
         print_preprocessing_exception(fd, sk, sv, e)
-        return False
+        raise e
         
     ### Insert DB ###
     # equipment table
@@ -741,9 +838,9 @@ def insert_equipment_accessory_sequipment_table(characterCode, data):
     try:  
         sql = f"""
             INSERT INTO lostark.equipment_table (
-                {''.join(f'`{key}`, ' for key in equipments.keys())[:-2]})
+                {''.join(f'{key}, ' for key in equipments.keys())[:-2]})
             VALUES ({''.join('%s, ' for _ in range(len(equipments.keys())))[:-2]});
-            """
+            """.replace('무기_AD(%)', '`무기_AD(%%)`')
         values = [equipment['characterCode'], equipment['무기_grade'], equipment['무기_name'], equipment['무기_type'], equipment['무기_quality'], equipment['무기_tier'], equipment['무기_itemLevel'], equipment['무기_ATK'], equipment['무기_AD(%)'], equipment['무기_setName'], equipment['무기_setLevel'], equipment['무기_REXP'], equipment['무기_esther'], equipment['무기_estherEffect'], equipment['무기_ella'], equipment['무기_reinforcementStep'], equipment['투구_grade'], equipment['투구_name'], equipment['투구_type'], equipment['투구_quality'], equipment['투구_tier'], equipment['투구_itemLevel'], equipment['투구_SAI'], equipment['투구_BDEF'], equipment['투구_BMDEF'], equipment['투구_BHP'], equipment['투구_ADEF'], equipment['투구_AMDEF'], equipment['투구_AHP'], equipment['투구_AHPP'], equipment['투구_setName'], equipment['투구_setLevel'], equipment['투구_REXP'], equipment['투구_reinforcementStep'], equipment['투구_alchemyName1'], equipment['투구_alchemyName2'], equipment['투구_alchemyPoint1'], equipment['투구_alchemyPoint2'], equipment['상의_grade'], equipment['상의_name'], equipment['상의_type'], equipment['상의_quality'], equipment['상의_tier'], equipment['상의_itemLevel'], equipment['상의_SAI'], equipment['상의_BDEF'], equipment['상의_BMDEF'], equipment['상의_BHP'], equipment['상의_ADEF'], equipment['상의_AMDEF'], equipment['상의_AHP'], equipment['상의_AHPP'], equipment['상의_setName'], equipment['상의_setLevel'], equipment['상의_REXP'], equipment['상의_reinforcementStep'], equipment['상의_alchemyName1'], equipment['상의_alchemyName2'], equipment['상의_alchemyPoint1'], equipment['상의_alchemyPoint2'], equipment['하의_grade'], equipment['하의_name'], equipment['하의_type'], equipment['하의_quality'], equipment['하의_tier'], equipment['하의_itemLevel'], equipment['하의_SAI'], equipment['하의_BDEF'], equipment['하의_BMDEF'], equipment['하의_BHP'], equipment['하의_ADEF'], equipment['하의_AMDEF'], equipment['하의_AHP'], equipment['하의_AHPP'], equipment['하의_setName'], equipment['하의_setLevel'], equipment['하의_REXP'], equipment['하의_reinforcementStep'], equipment['하의_alchemyName1'], equipment['하의_alchemyName2'], equipment['하의_alchemyPoint1'], equipment['하의_alchemyPoint2'], equipment['어깨_grade'], equipment['어깨_name'], equipment['어깨_type'], equipment['어깨_quality'], equipment['어깨_tier'], equipment['어깨_itemLevel'], equipment['어깨_SAI'], equipment['어깨_BDEF'], equipment['어깨_BMDEF'], equipment['어깨_BHP'], equipment['어깨_ADEF'], equipment['어깨_AMDEF'], equipment['어깨_AHP'], equipment['어깨_AHPP'], equipment['어깨_setName'], equipment['어깨_setLevel'], equipment['어깨_REXP'], equipment['어깨_reinforcementStep'], equipment['어깨_alchemyName1'], equipment['어깨_alchemyName2'], equipment['어깨_alchemyPoint1'], equipment['어깨_alchemyPoint2'], equipment['장갑_grade'], equipment['장갑_name'], equipment['장갑_type'], equipment['장갑_quality'], equipment['장갑_tier'], equipment['장갑_itemLevel'], equipment['장갑_SAI'], equipment['장갑_BDEF'], equipment['장갑_BMDEF'], equipment['장갑_BHP'], equipment['장갑_ADEF'], equipment['장갑_AMDEF'], equipment['장갑_AHP'], equipment['장갑_AHPP'], equipment['장갑_setName'], equipment['장갑_setLevel'], equipment['장갑_REXP'], equipment['장갑_reinforcementStep'], equipment['장갑_alchemyName1'], equipment['장갑_alchemyName2'], equipment['장갑_alchemyPoint1'], equipment['장갑_alchemyPoint2']]
         cursor.execute(sql, values)
         db.commit()
@@ -751,7 +848,7 @@ def insert_equipment_accessory_sequipment_table(characterCode, data):
         db.rollback()
         db.close()
         print_insert_db_exception(equipment, e)
-        return False
+        raise e
         
     # accessory table    
     try:  
@@ -767,7 +864,7 @@ def insert_equipment_accessory_sequipment_table(characterCode, data):
         db.rollback()
         db.close()
         print_insert_db_exception(accessory, e)
-        return False
+        raise e
         
     # special equipment table
     try: 
@@ -784,7 +881,7 @@ def insert_equipment_accessory_sequipment_table(characterCode, data):
         db.rollback()
         db.close()
         print_insert_db_exception(sequipment, e)
-        return False
+        raise e
 
 ### 4. skill ###
 def insert_skill_table(characterCode, data):
@@ -792,6 +889,19 @@ def insert_skill_table(characterCode, data):
     if result[0] == 1: return
     cdf = eval(data)
     if cdf==None: return
+
+    ## skill keys
+    skill_parts = [f'skill{i}' for i in range(1,17)] # 16개 스킬만 고려
+    dic_keys = ['name', 'level', 'cooltime','tripod1_name', 'tripod1_point', 'tripod2_name', 'tripod2_point',
+                'tripod3_name', 'tripod3_point', 'runeName', 'runeGrade','headAttack', 'backAttack', 
+                'partBreak', 'stagger', 'counter', '마나', '배터리', '버블', '충격', '기력', '내공', '영혼석',
+                '경직면역', '피격면역', '상태이상면역']
+    skills = {
+        'characterCode': None,
+    }
+    for part in skill_parts:
+        for key in dic_keys:
+            skills[f'{part}_{key}'] = None
         
     skill = skills.copy()
     skill['characterCode'] = characterCode
@@ -869,7 +979,7 @@ def insert_skill_table(characterCode, data):
                         skill[f'skill{skill_count}_상태이상면역'] = '상태이상 면역' in sv
     except Exception as e:
         print_preprocessing_exception(fd, sk, sv, e)
-        return False
+        raise e
 
     try:  
         db, cursor = get_db_cursor()
@@ -886,17 +996,448 @@ def insert_skill_table(characterCode, data):
         db.rollback()
         db.close()
         print_insert_db_exception(skill, e)
-        return False
+        raise e
+
+### 5. gem ###
+def insert_gem_table(characterCode, data):
+    result = check_code_already_in("gem_table", characterCode)
+    if result[0] == 1: return
+
+    ## gem keys
+    gem_parts = [f'gem{i}' for i in range(1, 12)] # 11개의 보석
+    dic_keys = ['type', 'level', 'grade','skillName', 'tier', 'availableTrade']
+    gems = {
+        'characterCode': None,
+    }
+    for part in gem_parts:
+        for key in dic_keys:
+            gems[f'{part}_{key}'] = None
+
+    gem = gems.copy()
+    gem['characterCode'] = characterCode
+    cdf = eval(data)
+    if cdf==None: return
+    cdf = cdf['Gems']
+    gem_count = 0
+    try:
+        for j in range(len(cdf)):
+            gem_count += 1
+            fd = flatten_dict(cdf[j])
+            gem[f'gem{gem_count}_grade'] = fd['Grade']
+            gem[f'gem{gem_count}_level'] = fd['Level']
+            for k, v in fd.items():
+                sk = str(k)
+                sv = str(v)
+                if '홍염' in sv:
+                    gem[f'gem{gem_count}_type'] = '홍염'
+                elif '멸화' in sv:
+                    gem[f'gem{gem_count}_type'] = '멸화'
+                elif '티어' in sv:
+                    gem[f'gem{gem_count}_tier'] = int(int_pattern.findall(sv)[0])
+                elif '재사용' in sv:
+                    gem[f'gem{gem_count}_skillName'] =  sv.split('재사용')[0]
+                elif '피해' in sv:
+                    gem[f'gem{gem_count}_skillName'] =  sv.split('피해')[0]
+                elif '거래' in sv:
+                    gem[f'gem{gem_count}_availableTrade'] = '가능' in sv   
+    except Exception as e:
+        print_preprocessing_exception(fd, sk, sv, e)
+        raise e
+        
+    try:
+        db, cursor = get_db_cursor()
+        sql = f"""
+            INSERT INTO lostark.gem_table (
+                {''.join(f'{key}, ' for key in gems.keys())[:-2]})
+            VALUES ({''.join('%s, ' for _ in range(len(gems.keys())))[:-2]});
+            """
+        values = [gem['characterCode'], gem['gem1_type'], gem['gem1_level'], gem['gem1_grade'], gem['gem1_skillName'], gem['gem1_tier'], gem['gem1_availableTrade'], gem['gem2_type'], gem['gem2_level'], gem['gem2_grade'], gem['gem2_skillName'], gem['gem2_tier'], gem['gem2_availableTrade'], gem['gem3_type'], gem['gem3_level'], gem['gem3_grade'], gem['gem3_skillName'], gem['gem3_tier'], gem['gem3_availableTrade'], gem['gem4_type'], gem['gem4_level'], gem['gem4_grade'], gem['gem4_skillName'], gem['gem4_tier'], gem['gem4_availableTrade'], gem['gem5_type'], gem['gem5_level'], gem['gem5_grade'], gem['gem5_skillName'], gem['gem5_tier'], gem['gem5_availableTrade'], gem['gem6_type'], gem['gem6_level'], gem['gem6_grade'], gem['gem6_skillName'], gem['gem6_tier'], gem['gem6_availableTrade'], gem['gem7_type'], gem['gem7_level'], gem['gem7_grade'], gem['gem7_skillName'], gem['gem7_tier'], gem['gem7_availableTrade'], gem['gem8_type'], gem['gem8_level'], gem['gem8_grade'], gem['gem8_skillName'], gem['gem8_tier'], gem['gem8_availableTrade'], gem['gem9_type'], gem['gem9_level'], gem['gem9_grade'], gem['gem9_skillName'], gem['gem9_tier'], gem['gem9_availableTrade'], gem['gem10_type'], gem['gem10_level'], gem['gem10_grade'], gem['gem10_skillName'], gem['gem10_tier'], gem['gem10_availableTrade'], gem['gem11_type'], gem['gem11_level'], gem['gem11_grade'], gem['gem11_skillName'], gem['gem11_tier'], gem['gem11_availableTrade']]
+        cursor.execute(sql, values)
+        db.commit()
+        db.close()
+    except Exception as e:
+        db.rollback()
+        db.close()
+        print_insert_db_exception(gem, e)
+        raise e
+
+### 6. engraving ###
+def insert_engraving_table(characterCode, data):
+    result = check_code_already_in("engraving_table", characterCode)
+    if result[0] == 1: return
+
+    ## engraving keys
+    engraving_parts = [f'engraving{i}' for i in range(1, 16)] # 15개의 각인만 고려
+    dic_keys = ['name', 'level']
+    engravings = {
+        'characterCode': None,
+        'grantName1': None,'grantPoint1':None, 'grantName2':None, 'grantPoint2':None
+    }
+    for part in engraving_parts:
+        for key in dic_keys:
+            engravings[f'{part}_{key}'] = None
+
+    engraving = engravings.copy()
+    engraving['characterCode'] = characterCode
+    cdf = eval(data)
+    if cdf==None: return
+        
+    engraving_count = 0
+    grant_count = 0
+    try:
+        cdfef = cdf['Effects'] # 활성화 각인
+        if cdfef==None:
+            pass
+        else:
+            for j in range(len(cdfef)):
+                engraving_count += 1
+                fd = flatten_dict(cdfef[j])
+                engraving[f'engraving{engraving_count}_name'] = fd['Name'].split(' Lv. ')[0]
+                engraving[f'engraving{engraving_count}_level'] = fd['Name'].split(' Lv. ')[-1]
+            
+        cdfen = cdf['Engravings']
+        if cdfen==None: return
+        for j in range(len(cdfen)):
+            grant_count += 1
+            fd = flatten_dict(cdfen[j])
+            engraving[f'grantName{grant_count}'] = fd['Name']
+            for k, v in fd.items():
+                sk = str(k)
+                sv = str(v)
+                if '각인 활성' in sv:
+                    engraving[f'grantPoint{grant_count}'] = int(int_pattern.findall(sv)[0])
+
+    except Exception as e:
+        print_preprocessing_exception(fd, sk, sv, e)
+        raise e
+        
+    try:  
+        db, cursor = get_db_cursor()
+        sql = f"""
+            INSERT INTO lostark.engraving_table (
+                {''.join(f'{key}, ' for key in engravings.keys())[:-2]})
+            VALUES ({''.join('%s, ' for _ in range(len(engravings.keys())))[:-2]});
+            """
+        values = [engraving['characterCode'], engraving['grantName1'], engraving['grantPoint1'], engraving['grantName2'], engraving['grantPoint2'], engraving['engraving1_name'], engraving['engraving1_level'], engraving['engraving2_name'], engraving['engraving2_level'], engraving['engraving3_name'], engraving['engraving3_level'], engraving['engraving4_name'], engraving['engraving4_level'], engraving['engraving5_name'], engraving['engraving5_level'], engraving['engraving6_name'], engraving['engraving6_level'], engraving['engraving7_name'], engraving['engraving7_level'], engraving['engraving8_name'], engraving['engraving8_level'], engraving['engraving9_name'], engraving['engraving9_level'], engraving['engraving10_name'], engraving['engraving10_level'], engraving['engraving11_name'], engraving['engraving11_level'], engraving['engraving12_name'], engraving['engraving12_level'], engraving['engraving13_name'], engraving['engraving13_level'], engraving['engraving14_name'], engraving['engraving14_level'], engraving['engraving15_name'], engraving['engraving15_level']]
+        cursor.execute(sql, values)
+        db.commit()
+        db.close()
+    except Exception as e:
+        db.rollback()
+        db.close()
+        print_insert_db_exception(engraving, e)
+        raise e
+
+### 7. card ###
+def insert_card_table(characterCode, data):
+    result = check_code_already_in("card_table", characterCode)
+    if result[0] == 1: return
+
+    ## card keys
+    card_parts = [f'card{i}' for i in range(1, 7)] # 카드 6장
+    dic_keys = ['name', 'level']
+    cards = {
+        'characterCode': None,
+    }
+    for part in card_parts:
+        for key in dic_keys:
+            cards[f'{part}_{key}'] = None
+    for i in range(1, 6): # 세트 5개
+        cards[f'setName{i}'] = None
+        cards[f'setPoint{i}'] = None
+        
+    card = cards.copy()
+    card['characterCode'] = characterCode
+    cdf = eval(data)
+    if cdf==None: return
+    card_count = 0
+    set_count = 0
+    try:
+        cdfc = cdf['Cards'] # 장착 카드
+        if cdfc == None: return
+        for j in range(len(cdfc)):
+            card_count += 1
+            fd = flatten_dict(cdfc[j])
+            card[f'card{card_count}_name'] = fd['Name']
+            card[f'card{card_count}_level'] = fd['AwakeCount']
+
+        cdfe = cdf['Effects'] # 활성화된 세트
+        if cdfe==None: return
+        for j in range(len(cdfe)):
+            try:
+                set_name = cdfe[j]['Items'][-1]['Name'].split(' (')
+            except:
+                continue
+            set_count += 1
+            card[f'setName{set_count}'] = set_name[0]
+            if len(set_name) > 1: # 세트 각성효과 활성화 되어 있다면
+                card[f'setPoint{set_count}'] = int(int_pattern.findall(set_name[1])[0])
+            else: # 실제로는 0이 아닐 수 있음, 현 단계에서는 계산 불가(복잡함)
+                card[f'setPoint{set_count}'] = 0
+
+    except Exception as e:
+        print_preprocessing_exception(fd, '', '', e)
+        raise e
+        
+    try:  
+        db, cursor = get_db_cursor()
+        sql = f"""
+            INSERT INTO lostark.card_table (
+                {''.join(f'{key}, ' for key in cards.keys())[:-2]})
+            VALUES ({''.join('%s, ' for _ in range(len(cards.keys())))[:-2]});
+            """
+        values = [card['characterCode'], card['card1_name'], card['card1_level'], card['card2_name'], card['card2_level'], card['card3_name'], card['card3_level'], card['card4_name'], card['card4_level'], card['card5_name'], card['card5_level'], card['card6_name'], card['card6_level'], card['setName1'], card['setPoint1'], card['setName2'], card['setPoint2'], card['setName3'], card['setPoint3'], card['setName4'], card['setPoint4'], card['setName5'], card['setPoint5']] 
+        cursor.execute(sql, values)
+        db.commit()
+        db.close()
+    except Exception as e:
+        db.rollback()
+        db.close()
+        print_insert_db_exception(card, e)
+        raise e
+
+### 8. Collectible ###
+def replace_collectible_key(ct, cdata):
+    ck = (ct+"_"+cdata['PointName']).replace('_이그네아의 징표 :', '').replace('_세계수의 잎', '')\
+        .replace('_모험물 :', '').replace('_위대한 미술품', '').replace('_오르페우스의 별', '')\
+        .replace(' 섬의 마음', ' 섬').replace(' ', '_').replace('#', '').replace('-', '_')
+    return ck
+
+def insert_collectible_table(characterCode, data):
+    result = check_code_already_in("collectible_table", characterCode)
+    if result[0] == 1: return
+
+    ## collectible keys
+    # collectibles에는 None 값이 없음
+    collectibles = {'characterCode': None}
+    for ctype in eval(data):
+        ct = ctype['Type']
+        for cdata in ctype['CollectiblePoints']:
+            ck = replace_collectible_key(ct, cdata)
+            collectibles[ck] = None
+        
+    collectible = collectibles.copy()
+    collectible['characterCode'] = characterCode
+    try:
+        for ctype in eval(data):
+            ct = ctype['Type']
+            for cdata in ctype['CollectiblePoints']:
+                ck = replace_collectible_key(ct, cdata)
+                collectible[ck] = cdata['Point']
+
+    except Exception as e:
+        traceback.print_exc()
+        raise e
+        
+    try:  
+        db, cursor = get_db_cursor()
+        sql = f"""
+            INSERT INTO lostark.collectible_table (
+                {''.join(f'{key}, ' for key in collectibles.keys())[:-2]})
+            VALUES ({''.join('%s, ' for _ in range(len(collectibles.keys())))[:-2]});
+            """
+        values = [collectible['characterCode'], collectible['모코코_씨앗_아르테미스'], collectible['모코코_씨앗_유디아'], collectible['모코코_씨앗_루테란_서부'], collectible['모코코_씨앗_루테란_동부'], collectible['모코코_씨앗_애니츠'], collectible['모코코_씨앗_아르데타인'], collectible['모코코_씨앗_베른_북부'], collectible['모코코_씨앗_슈샤이어'], collectible['모코코_씨앗_로헨델'], collectible['모코코_씨앗_욘'], collectible['모코코_씨앗_페이튼'], collectible['모코코_씨앗_파푸니카'], collectible['모코코_씨앗_베른_남부'], collectible['모코코_씨앗_로웬'], collectible['모코코_씨앗_엘가시아'], collectible['모코코_씨앗_플레체'], collectible['모코코_씨앗_볼다이크'], collectible['모코코_씨앗_대항해'], collectible['섬의_마음_고블린_섬'], collectible['섬의_마음_거대버섯_섬'], collectible['섬의_마음_토토실버_섬'], collectible['섬의_마음_토토피아_섬'], collectible['섬의_마음_환각의_섬'], collectible['섬의_마음_잠자는_노래의_섬'], collectible['섬의_마음_별빛_등대_섬'], collectible['섬의_마음_세월의_섬'], collectible['섬의_마음_볼라르_섬'], collectible['섬의_마음_두키_섬'], collectible['섬의_마음_갈망의_섬'], collectible['섬의_마음_비밀기지_X_301_섬'], collectible['섬의_마음_알트아이젠_섬'], collectible['섬의_마음_칼트헤르츠_섬'], collectible['섬의_마음_안개의_섬'], collectible['섬의_마음_얼음_미로의_섬'], collectible['섬의_마음_얼음과_불의_섬'], collectible['섬의_마음_비키니_아일랜드_섬'], collectible['섬의_마음_그림자의_섬'], collectible['섬의_마음_포르투나_섬'], collectible['섬의_마음_에버그레이스의_둥지_섬'], collectible['섬의_마음_스피다_섬'], collectible['섬의_마음_회상의_섬'], collectible['섬의_마음_포르페_섬'], collectible['섬의_마음_페이토_섬'], collectible['섬의_마음_잊혀진_자들의_도시_섬'], collectible['섬의_마음_검은이빨_주둔지_섬'], collectible['섬의_마음_휴양지_그라비스_섬'], collectible['섬의_마음_외로운_섬_오페르_섬'], collectible['섬의_마음_해바라기_섬'], collectible['섬의_마음_자유의_섬'], collectible['섬의_마음_카마인의_주둔지_섬'], collectible['섬의_마음_죽음의_협곡_섬'], collectible['섬의_마음_작은_행운의_섬'], collectible['섬의_마음_왜곡된_차원의_섬'], collectible['섬의_마음_에라스모의_섬'], collectible['섬의_마음_포모나_섬'], collectible['섬의_마음_도망자들의_마을_섬'], collectible['섬의_마음_메데이아_섬'], collectible['섬의_마음_리베하임_섬'], collectible['섬의_마음_우거진_갈대의_섬'], collectible['섬의_마음_메투스_제도_섬'], collectible['섬의_마음_해적마을_아틀라스_섬'], collectible['섬의_마음_지혜의_섬'], collectible['섬의_마음_신월의_섬'], collectible['섬의_마음_고요의_섬'], collectible['섬의_마음_하얀파도_섬'], collectible['섬의_마음_무법자의_섬'], collectible['섬의_마음_격류의_섬'], collectible['섬의_마음_나루니_섬'], collectible['섬의_마음_노토스_섬'], collectible['섬의_마음_몬테_섬'], collectible['섬의_마음_판다_푸푸_섬'], collectible['섬의_마음_몽환의_섬'], collectible['섬의_마음_하모니_섬'], collectible['섬의_마음_꿈꾸는_갈매기_섬'], collectible['섬의_마음_부서진_빙하의_섬'], collectible['섬의_마음_블루홀_섬'], collectible['섬의_마음_거북_섬'], collectible['섬의_마음_희망의_섬'], collectible['섬의_마음_로팡_섬'], collectible['섬의_마음_고립된_영원의_섬'], collectible['섬의_마음_히프노스의_눈_섬'], collectible['섬의_마음_지고의_섬'], collectible['섬의_마음_그릇된_욕망의_섬'], collectible['섬의_마음_오르비스_섬'], collectible['섬의_마음_에스텔라_섬'], collectible['섬의_마음_슬라임_아일랜드_섬'], collectible['섬의_마음_알라케르_섬'], collectible['섬의_마음_기회의_섬'], collectible['섬의_마음_태초의_섬'], collectible['섬의_마음_황금물결_섬'], collectible['섬의_마음_고요한_안식의_섬'], collectible['섬의_마음_클럽_아비뉴_섬'], collectible['섬의_마음_수라도_섬'], collectible['섬의_마음_기약의_섬'], collectible['섬의_마음_황혼의_섬'], collectible['섬의_마음_아르곤_섬'], collectible['섬의_마음_환영_나비_섬'], collectible['섬의_마음_푸른_바람의_섬'], collectible['섬의_마음_무릉도원_섬'], collectible['섬의_마음_아트로포스_섬'], collectible['섬의_마음_발푸르기스_섬'], collectible['섬의_마음_미지의_섬'], collectible['섬의_마음_그림자달_시장_섬'], collectible['섬의_마음_페르마타_섬'], collectible['섬의_마음_지스브로이_섬'], collectible['섬의_마음_두키_주식회사_섬'], collectible['섬의_마음_속삭이는_작은_섬'], collectible['섬의_마음_비탄의_섬'], collectible['섬의_마음_환죽도_섬'], collectible['섬의_마음_쿵덕쿵_아일랜드_섬'], collectible['섬의_마음_이스테르_섬'], collectible['섬의_마음_스노우팡_아일랜드_섬'], collectible['섬의_마음_모코모코_야시장_섬'], collectible['섬의_마음_꿈꾸는_추억의_섬'], collectible['섬의_마음_잔혹한_장난감_성_섬'], collectible['섬의_마음_모코콩_아일랜드_섬'], collectible['섬의_마음_라일라이_아일랜드_섬'], collectible['섬의_마음_프레테리아_섬'], collectible['위대한_미술품_1'], collectible['위대한_미술품_2'], collectible['위대한_미술품_3'], collectible['위대한_미술품_4'], collectible['위대한_미술품_5'], collectible['위대한_미술품_6'], collectible['위대한_미술품_7'], collectible['위대한_미술품_8'], collectible['위대한_미술품_9'], collectible['위대한_미술품_10'], collectible['위대한_미술품_11'], collectible['위대한_미술품_12'], collectible['위대한_미술품_13'], collectible['위대한_미술품_14'], collectible['위대한_미술품_15'], collectible['위대한_미술품_16'], collectible['위대한_미술품_17'], collectible['위대한_미술품_18'], collectible['위대한_미술품_19'], collectible['위대한_미술품_20'], collectible['위대한_미술품_21'], collectible['위대한_미술품_22'], collectible['위대한_미술품_23'], collectible['위대한_미술품_24'], collectible['위대한_미술품_25'], collectible['위대한_미술품_26'], collectible['위대한_미술품_27'], collectible['위대한_미술품_28'], collectible['위대한_미술품_29'], collectible['위대한_미술품_30'], collectible['위대한_미술품_31'], collectible['위대한_미술품_32'], collectible['위대한_미술품_33'], collectible['위대한_미술품_34'], collectible['위대한_미술품_35'], collectible['위대한_미술품_36'], collectible['위대한_미술품_37'], collectible['위대한_미술품_38'], collectible['위대한_미술품_39'], collectible['위대한_미술품_40'], collectible['위대한_미술품_41'], collectible['위대한_미술품_42'], collectible['위대한_미술품_43'], collectible['위대한_미술품_44'], collectible['위대한_미술품_45'], collectible['위대한_미술품_46'], collectible['위대한_미술품_47'], collectible['위대한_미술품_48'], collectible['위대한_미술품_49'], collectible['위대한_미술품_50'], collectible['위대한_미술품_51'], collectible['위대한_미술품_52'], collectible['위대한_미술품_53'], collectible['위대한_미술품_54'], collectible['위대한_미술품_55'], collectible['위대한_미술품_56'], collectible['위대한_미술품_57'], collectible['위대한_미술품_58'], collectible['위대한_미술품_59'], collectible['위대한_미술품_60'], collectible['거인의_심장_첫_번째_거인의_심장'], collectible['거인의_심장_두_번째_거인의_심장'], collectible['거인의_심장_세_번째_거인의_심장'], collectible['거인의_심장_네_번째_거인의_심장'], collectible['거인의_심장_다섯_번째_거인의_심장'], collectible['거인의_심장_여섯_번째_거인의_심장'], collectible['거인의_심장_일곱_번째_거인의_심장'], collectible['거인의_심장_여덟_번째_거인의_심장'], collectible['거인의_심장_아홉_번째_거인의_심장'], collectible['거인의_심장_열_번째_거인의_심장'], collectible['거인의_심장_열한_번째_거인의_심장'], collectible['거인의_심장_열두_번째_거인의_심장'], collectible['거인의_심장_열세_번째_거인의_심장'], collectible['거인의_심장_열네_번째_거인의_심장'], collectible['거인의_심장_열다섯_번째_거인의_심장'], collectible['이그네아의_징표_아르테미스'], collectible['이그네아의_징표_유디아'], collectible['이그네아의_징표_루테란_서부'], collectible['이그네아의_징표_루테란_동부'], collectible['이그네아의_징표_토토이크'], collectible['이그네아의_징표_애니츠'], collectible['이그네아의_징표_아르데타인'], collectible['이그네아의_징표_베른_북부'], collectible['이그네아의_징표_슈샤이어'], collectible['이그네아의_징표_로헨델'], collectible['이그네아의_징표_욘'], collectible['이그네아의_징표_페이튼'], collectible['이그네아의_징표_파푸니카'], collectible['이그네아의_징표_베른_남부'], collectible['이그네아의_징표_로웬'], collectible['이그네아의_징표_엘가시아'], collectible['이그네아의_징표_볼다이크'], collectible['항해_모험물_모코코_버섯'], collectible['항해_모험물_라마'], collectible['항해_모험물_붉은바다거북'], collectible['항해_모험물_스타더스트'], collectible['항해_모험물_바다꽃'], collectible['항해_모험물_스타후르츠'], collectible['항해_모험물_용과'], collectible['항해_모험물_맨드릴'], collectible['항해_모험물_유령_도마뱀'], collectible['항해_모험물_오색앵무새'], collectible['항해_모험물_바람의_석판'], collectible['항해_모험물_반달_가면'], collectible['항해_모험물_고대_지팡이'], collectible['항해_모험물_고대_금화'], collectible['항해_모험물_잊혀진_호수'], collectible['항해_모험물_크레바스'], collectible['항해_모험물_불타는_얼음'], collectible['항해_모험물_고인돌'], collectible['항해_모험물_마법진'], collectible['항해_모험물_난파선_잔해'], collectible['항해_모험물_참돌고래'], collectible['항해_모험물_극지_맘모스'], collectible['항해_모험물_붉은낙타'], collectible['항해_모험물_유니콘'], collectible['항해_모험물_유령_가오리'], collectible['항해_모험물_세이렌'], collectible['항해_모험물_달의_탑'], collectible['항해_모험물_신의_창'], collectible['항해_모험물_기에나_석상'], collectible['항해_모험물_오로라'], collectible['항해_모험물_소용돌이'], collectible['항해_모험물_침묵하는_섬'], collectible['항해_모험물_토토이끼_배'], collectible['항해_모험물_북해의_눈'], collectible['항해_모험물_남해의_눈'], collectible['항해_모험물_죽은자의_눈'], collectible['항해_모험물_의문의_상자'], collectible['항해_모험물_해적의_의족'], collectible['항해_모험물_해적의_깃발'], collectible['항해_모험물_헤스티아호'], collectible['항해_모험물_환영_나비'], collectible['항해_모험물_대왕_조개'], collectible['항해_모험물_천_덮인_선수상'], collectible['항해_모험물_여인의_얼음_조각상'], collectible['항해_모험물_눈썰매'], collectible['항해_모험물_잃어버린_상선'], collectible['항해_모험물_심해_암석'], collectible['항해_모험물_부서진_거대사슬'], collectible['항해_모험물_가디언의_상흔'], collectible['세계수의_잎_1'], collectible['세계수의_잎_2'], collectible['세계수의_잎_3'], collectible['세계수의_잎_4'], collectible['세계수의_잎_5'], collectible['세계수의_잎_6'], collectible['세계수의_잎_7'], collectible['세계수의_잎_8'], collectible['세계수의_잎_9'], collectible['세계수의_잎_10'], collectible['세계수의_잎_11'], collectible['세계수의_잎_12'], collectible['세계수의_잎_13'], collectible['세계수의_잎_14'], collectible['세계수의_잎_15'], collectible['세계수의_잎_16'], collectible['세계수의_잎_17'], collectible['세계수의_잎_18'], collectible['세계수의_잎_19'], collectible['세계수의_잎_20'], collectible['세계수의_잎_21'], collectible['세계수의_잎_22'], collectible['세계수의_잎_23'], collectible['세계수의_잎_24'], collectible['세계수의_잎_25'], collectible['세계수의_잎_26'], collectible['세계수의_잎_27'], collectible['세계수의_잎_28'], collectible['세계수의_잎_29'], collectible['세계수의_잎_30'], collectible['세계수의_잎_31'], collectible['세계수의_잎_41'], collectible['세계수의_잎_42'], collectible['세계수의_잎_43'], collectible['세계수의_잎_44'], collectible['세계수의_잎_45'], collectible['세계수의_잎_46'], collectible['세계수의_잎_50'], collectible['세계수의_잎_51'], collectible['세계수의_잎_52'], collectible['세계수의_잎_53'], collectible['세계수의_잎_54'], collectible['세계수의_잎_55'], collectible['세계수의_잎_59'], collectible['세계수의_잎_60'], collectible['세계수의_잎_61'], collectible['세계수의_잎_62'], collectible['세계수의_잎_63'], collectible['세계수의_잎_64'], collectible['세계수의_잎_68'], collectible['세계수의_잎_69'], collectible['세계수의_잎_70'], collectible['세계수의_잎_71'], collectible['세계수의_잎_72'], collectible['세계수의_잎_73'], collectible['세계수의_잎_74'], collectible['세계수의_잎_75'], collectible['세계수의_잎_76'], collectible['세계수의_잎_77'], collectible['세계수의_잎_78'], collectible['세계수의_잎_79'], collectible['세계수의_잎_80'], collectible['세계수의_잎_81'], collectible['세계수의_잎_82'], collectible['세계수의_잎_83'], collectible['세계수의_잎_84'], collectible['세계수의_잎_85'], collectible['세계수의_잎_86'], collectible['세계수의_잎_87'], collectible['세계수의_잎_88'], collectible['세계수의_잎_89'], collectible['세계수의_잎_90'], collectible['세계수의_잎_91'], collectible['세계수의_잎_92'], collectible['세계수의_잎_93'], collectible['세계수의_잎_94'], collectible['세계수의_잎_95'], collectible['세계수의_잎_96'], collectible['세계수의_잎_97'], collectible['세계수의_잎_98'], collectible['세계수의_잎_99'], collectible['세계수의_잎_100'], collectible['세계수의_잎_101'], collectible['세계수의_잎_102'], collectible['세계수의_잎_103'], collectible['세계수의_잎_104'], collectible['세계수의_잎_105'], collectible['세계수의_잎_106'], collectible['세계수의_잎_107'], collectible['세계수의_잎_108'], collectible['세계수의_잎_109'], collectible['오르페우스의_별_1'], collectible['오르페우스의_별_2'], collectible['오르페우스의_별_3'], collectible['오르페우스의_별_4'], collectible['오르페우스의_별_5'], collectible['오르페우스의_별_6'], collectible['오르페우스의_별_7'], collectible['오르페우스의_별_8'], collectible['오르페우스의_별_9'], collectible['오르페우스의_별_10'], collectible['기억의_오르골_기억의_구슬_1'], collectible['기억의_오르골_기억의_구슬_2'], collectible['기억의_오르골_기억의_구슬_3'], collectible['기억의_오르골_기억의_구슬_4'], collectible['기억의_오르골_기억의_구슬_5'], collectible['기억의_오르골_기억의_구슬_6'], collectible['기억의_오르골_기억의_구슬_7'], collectible['기억의_오르골_기억의_구슬_8'], collectible['기억의_오르골_기억의_구슬_9'], collectible['기억의_오르골_기억의_구슬_10']]
+        cursor.execute(sql, values)
+        db.commit()
+        db.close()
+    except Exception as e:
+        db.rollback()
+        db.close()
+        print_insert_db_exception(collectible, e)
+        raise e
+
+### 9. colosseum ###
+def insert_colosseum_table(characterCode, data):
+    result = check_code_already_in("colosseum_table", characterCode)
+    if result[0] == 1: return
+    ## colosseum keys
+
+    seasons = ['preSeason']
+    for i in range(1, len(eval(data)['Colosseums'])): 
+        seasons.append(f'season{i}')
+    # CoOpBattle, Competitive, DeathMatch, SeasonName, TeamDeathMatch, TeamElimination
+    dic_keys = ['CoOpBattle_AceCount','CoOpBattle_DeathCount','CoOpBattle_KillCount','CoOpBattle_LoseCount',
+                'CoOpBattle_PlayCount','CoOpBattle_TieCount','CoOpBattle_VictoryCount','Competitive_AceCount',
+                'Competitive_DeathCount','Competitive_KillCount','Competitive_LoseCount','Competitive_PlayCount',
+                'Competitive_Rank','Competitive_RankLastMmr','Competitive_RankName','Competitive_TieCount',
+                'Competitive_VictoryCount','Deathmatch_AceCount','Deathmatch_DeathCount','Deathmatch_KillCount',
+                'Deathmatch_LoseCount','Deathmatch_PlayCount','Deathmatch_TieCount','Deathmatch_VictoryCount',
+                'TeamDeathmatch_AceCount','TeamDeathmatch_DeathCount','TeamDeathmatch_KillCount',
+                'TeamDeathmatch_LoseCount','TeamDeathmatch_PlayCount','TeamDeathmatch_TieCount',
+                'TeamDeathmatch_VictoryCount','TeamElimination_AceCount','TeamElimination_AllKillCount',
+                'TeamElimination_DeathCount','TeamElimination_FirstPlayCount','TeamElimination_FirstWinCount',
+                'TeamElimination_KillCount','TeamElimination_LoseCount','TeamElimination_PlayCount',
+                'TeamElimination_SecondPlayCount','TeamElimination_SecondWinCount','TeamElimination_ThirdPlayCount',
+                'TeamElimination_ThirdWinCount','TeamElimination_TieCount','TeamElimination_VictoryCount']
+    colosseums = {'characterCode': None, 'exp':None, 'preRank':None, 'rank':None}
+    for s in seasons:
+        for key in dic_keys:
+            colosseums[s+'_'+key] = None
+        
+    colosseum = colosseums.copy()
+    colosseum['characterCode'] = characterCode
+    try:
+        cdf = eval(data)
+        if cdf==None: return
+        colosseum['exp'] = cdf['Exp']
+        colosseum['preRank'] = cdf['PreRank']
+        colosseum['rank'] = cdf['Rank']
+        for cidx in range(len(cdf['Colosseums'])):
+            if cidx == 0: season_name ='preSeason'
+            else: season_name = f'시즌{cidx}'
+            for k, v in cdf['Colosseums'][cidx].items():
+                sk = str(k)
+                sv = str(v)
+                if (v != None) & ('시즌' not in sv):
+                    for ck, cv in v.items():
+                        if ck != 'RankIcon':
+                            colosseum[season_name+'_'+sk+'_'+ck] = cv
+    except Exception as e:
+        print_preprocessing_exception(cdf, sk, sv, e)
+        raise e
+        
+    try:  
+        db, cursor = get_db_cursor()
+        sql = f"""
+            INSERT INTO lostark.colosseum_table (
+                {''.join(f'`{key}`, ' for key in colosseums.keys())[:-2]})
+            VALUES ({''.join('%s, ' for _ in range(len(colosseums.keys())))[:-2]});
+            """
+        values = [colosseum['characterCode'], colosseum['exp'], colosseum['preRank'], colosseum['rank'], colosseum['preSeason_CoOpBattle_AceCount'], colosseum['preSeason_CoOpBattle_DeathCount'], colosseum['preSeason_CoOpBattle_KillCount'], colosseum['preSeason_CoOpBattle_LoseCount'], colosseum['preSeason_CoOpBattle_PlayCount'], colosseum['preSeason_CoOpBattle_TieCount'], colosseum['preSeason_CoOpBattle_VictoryCount'], colosseum['preSeason_Competitive_AceCount'], colosseum['preSeason_Competitive_DeathCount'], colosseum['preSeason_Competitive_KillCount'], colosseum['preSeason_Competitive_LoseCount'], colosseum['preSeason_Competitive_PlayCount'], colosseum['preSeason_Competitive_Rank'], colosseum['preSeason_Competitive_RankLastMmr'], colosseum['preSeason_Competitive_RankName'], colosseum['preSeason_Competitive_TieCount'], colosseum['preSeason_Competitive_VictoryCount'], colosseum['preSeason_Deathmatch_AceCount'], colosseum['preSeason_Deathmatch_DeathCount'], colosseum['preSeason_Deathmatch_KillCount'], colosseum['preSeason_Deathmatch_LoseCount'], colosseum['preSeason_Deathmatch_PlayCount'], colosseum['preSeason_Deathmatch_TieCount'], colosseum['preSeason_Deathmatch_VictoryCount'], colosseum['preSeason_TeamDeathmatch_AceCount'], colosseum['preSeason_TeamDeathmatch_DeathCount'], colosseum['preSeason_TeamDeathmatch_KillCount'], colosseum['preSeason_TeamDeathmatch_LoseCount'], colosseum['preSeason_TeamDeathmatch_PlayCount'], colosseum['preSeason_TeamDeathmatch_TieCount'], colosseum['preSeason_TeamDeathmatch_VictoryCount'], colosseum['preSeason_TeamElimination_AceCount'], colosseum['preSeason_TeamElimination_AllKillCount'], colosseum['preSeason_TeamElimination_DeathCount'], colosseum['preSeason_TeamElimination_FirstPlayCount'], colosseum['preSeason_TeamElimination_FirstWinCount'], colosseum['preSeason_TeamElimination_KillCount'], colosseum['preSeason_TeamElimination_LoseCount'], colosseum['preSeason_TeamElimination_PlayCount'], colosseum['preSeason_TeamElimination_SecondPlayCount'], colosseum['preSeason_TeamElimination_SecondWinCount'], colosseum['preSeason_TeamElimination_ThirdPlayCount'], colosseum['preSeason_TeamElimination_ThirdWinCount'], colosseum['preSeason_TeamElimination_TieCount'], colosseum['preSeason_TeamElimination_VictoryCount'], colosseum['season1_CoOpBattle_AceCount'], colosseum['season1_CoOpBattle_DeathCount'], colosseum['season1_CoOpBattle_KillCount'], colosseum['season1_CoOpBattle_LoseCount'], colosseum['season1_CoOpBattle_PlayCount'], colosseum['season1_CoOpBattle_TieCount'], colosseum['season1_CoOpBattle_VictoryCount'], colosseum['season1_Competitive_AceCount'], colosseum['season1_Competitive_DeathCount'], colosseum['season1_Competitive_KillCount'], colosseum['season1_Competitive_LoseCount'], colosseum['season1_Competitive_PlayCount'], colosseum['season1_Competitive_Rank'], colosseum['season1_Competitive_RankLastMmr'], colosseum['season1_Competitive_RankName'], colosseum['season1_Competitive_TieCount'], colosseum['season1_Competitive_VictoryCount'], colosseum['season1_Deathmatch_AceCount'], colosseum['season1_Deathmatch_DeathCount'], colosseum['season1_Deathmatch_KillCount'], colosseum['season1_Deathmatch_LoseCount'], colosseum['season1_Deathmatch_PlayCount'], colosseum['season1_Deathmatch_TieCount'], colosseum['season1_Deathmatch_VictoryCount'], colosseum['season1_TeamDeathmatch_AceCount'], colosseum['season1_TeamDeathmatch_DeathCount'], colosseum['season1_TeamDeathmatch_KillCount'], colosseum['season1_TeamDeathmatch_LoseCount'], colosseum['season1_TeamDeathmatch_PlayCount'], colosseum['season1_TeamDeathmatch_TieCount'], colosseum['season1_TeamDeathmatch_VictoryCount'], colosseum['season1_TeamElimination_AceCount'], colosseum['season1_TeamElimination_AllKillCount'], colosseum['season1_TeamElimination_DeathCount'], colosseum['season1_TeamElimination_FirstPlayCount'], colosseum['season1_TeamElimination_FirstWinCount'], colosseum['season1_TeamElimination_KillCount'], colosseum['season1_TeamElimination_LoseCount'], colosseum['season1_TeamElimination_PlayCount'], colosseum['season1_TeamElimination_SecondPlayCount'], colosseum['season1_TeamElimination_SecondWinCount'], colosseum['season1_TeamElimination_ThirdPlayCount'], colosseum['season1_TeamElimination_ThirdWinCount'], colosseum['season1_TeamElimination_TieCount'], colosseum['season1_TeamElimination_VictoryCount'], colosseum['season2_CoOpBattle_AceCount'], colosseum['season2_CoOpBattle_DeathCount'], colosseum['season2_CoOpBattle_KillCount'], colosseum['season2_CoOpBattle_LoseCount'], colosseum['season2_CoOpBattle_PlayCount'], colosseum['season2_CoOpBattle_TieCount'], colosseum['season2_CoOpBattle_VictoryCount'], colosseum['season2_Competitive_AceCount'], colosseum['season2_Competitive_DeathCount'], colosseum['season2_Competitive_KillCount'], colosseum['season2_Competitive_LoseCount'], colosseum['season2_Competitive_PlayCount'], colosseum['season2_Competitive_Rank'], colosseum['season2_Competitive_RankLastMmr'], colosseum['season2_Competitive_RankName'], colosseum['season2_Competitive_TieCount'], colosseum['season2_Competitive_VictoryCount'], colosseum['season2_Deathmatch_AceCount'], colosseum['season2_Deathmatch_DeathCount'], colosseum['season2_Deathmatch_KillCount'], colosseum['season2_Deathmatch_LoseCount'], colosseum['season2_Deathmatch_PlayCount'], colosseum['season2_Deathmatch_TieCount'], colosseum['season2_Deathmatch_VictoryCount'], colosseum['season2_TeamDeathmatch_AceCount'], colosseum['season2_TeamDeathmatch_DeathCount'], colosseum['season2_TeamDeathmatch_KillCount'], colosseum['season2_TeamDeathmatch_LoseCount'], colosseum['season2_TeamDeathmatch_PlayCount'], colosseum['season2_TeamDeathmatch_TieCount'], colosseum['season2_TeamDeathmatch_VictoryCount'], colosseum['season2_TeamElimination_AceCount'], colosseum['season2_TeamElimination_AllKillCount'], colosseum['season2_TeamElimination_DeathCount'], colosseum['season2_TeamElimination_FirstPlayCount'], colosseum['season2_TeamElimination_FirstWinCount'], colosseum['season2_TeamElimination_KillCount'], colosseum['season2_TeamElimination_LoseCount'], colosseum['season2_TeamElimination_PlayCount'], colosseum['season2_TeamElimination_SecondPlayCount'], colosseum['season2_TeamElimination_SecondWinCount'], colosseum['season2_TeamElimination_ThirdPlayCount'], colosseum['season2_TeamElimination_ThirdWinCount'], colosseum['season2_TeamElimination_TieCount'], colosseum['season2_TeamElimination_VictoryCount'], colosseum['season3_CoOpBattle_AceCount'], colosseum['season3_CoOpBattle_DeathCount'], colosseum['season3_CoOpBattle_KillCount'], colosseum['season3_CoOpBattle_LoseCount'], colosseum['season3_CoOpBattle_PlayCount'], colosseum['season3_CoOpBattle_TieCount'], colosseum['season3_CoOpBattle_VictoryCount'], colosseum['season3_Competitive_AceCount'], colosseum['season3_Competitive_DeathCount'], colosseum['season3_Competitive_KillCount'], colosseum['season3_Competitive_LoseCount'], colosseum['season3_Competitive_PlayCount'], colosseum['season3_Competitive_Rank'], colosseum['season3_Competitive_RankLastMmr'], colosseum['season3_Competitive_RankName'], colosseum['season3_Competitive_TieCount'], colosseum['season3_Competitive_VictoryCount'], colosseum['season3_Deathmatch_AceCount'], colosseum['season3_Deathmatch_DeathCount'], colosseum['season3_Deathmatch_KillCount'], colosseum['season3_Deathmatch_LoseCount'], colosseum['season3_Deathmatch_PlayCount'], colosseum['season3_Deathmatch_TieCount'], colosseum['season3_Deathmatch_VictoryCount'], colosseum['season3_TeamDeathmatch_AceCount'], colosseum['season3_TeamDeathmatch_DeathCount'], colosseum['season3_TeamDeathmatch_KillCount'], colosseum['season3_TeamDeathmatch_LoseCount'], colosseum['season3_TeamDeathmatch_PlayCount'], colosseum['season3_TeamDeathmatch_TieCount'], colosseum['season3_TeamDeathmatch_VictoryCount'], colosseum['season3_TeamElimination_AceCount'], colosseum['season3_TeamElimination_AllKillCount'], colosseum['season3_TeamElimination_DeathCount'], colosseum['season3_TeamElimination_FirstPlayCount'], colosseum['season3_TeamElimination_FirstWinCount'], colosseum['season3_TeamElimination_KillCount'], colosseum['season3_TeamElimination_LoseCount'], colosseum['season3_TeamElimination_PlayCount'], colosseum['season3_TeamElimination_SecondPlayCount'], colosseum['season3_TeamElimination_SecondWinCount'], colosseum['season3_TeamElimination_ThirdPlayCount'], colosseum['season3_TeamElimination_ThirdWinCount'], colosseum['season3_TeamElimination_TieCount'], colosseum['season3_TeamElimination_VictoryCount'], colosseum['season4_CoOpBattle_AceCount'], colosseum['season4_CoOpBattle_DeathCount'], colosseum['season4_CoOpBattle_KillCount'], colosseum['season4_CoOpBattle_LoseCount'], colosseum['season4_CoOpBattle_PlayCount'], colosseum['season4_CoOpBattle_TieCount'], colosseum['season4_CoOpBattle_VictoryCount'], colosseum['season4_Competitive_AceCount'], colosseum['season4_Competitive_DeathCount'], colosseum['season4_Competitive_KillCount'], colosseum['season4_Competitive_LoseCount'], colosseum['season4_Competitive_PlayCount'], colosseum['season4_Competitive_Rank'], colosseum['season4_Competitive_RankLastMmr'], colosseum['season4_Competitive_RankName'], colosseum['season4_Competitive_TieCount'], colosseum['season4_Competitive_VictoryCount'], colosseum['season4_Deathmatch_AceCount'], colosseum['season4_Deathmatch_DeathCount'], colosseum['season4_Deathmatch_KillCount'], colosseum['season4_Deathmatch_LoseCount'], colosseum['season4_Deathmatch_PlayCount'], colosseum['season4_Deathmatch_TieCount'], colosseum['season4_Deathmatch_VictoryCount'], colosseum['season4_TeamDeathmatch_AceCount'], colosseum['season4_TeamDeathmatch_DeathCount'], colosseum['season4_TeamDeathmatch_KillCount'], colosseum['season4_TeamDeathmatch_LoseCount'], colosseum['season4_TeamDeathmatch_PlayCount'], colosseum['season4_TeamDeathmatch_TieCount'], colosseum['season4_TeamDeathmatch_VictoryCount'], colosseum['season4_TeamElimination_AceCount'], colosseum['season4_TeamElimination_AllKillCount'], colosseum['season4_TeamElimination_DeathCount'], colosseum['season4_TeamElimination_FirstPlayCount'], colosseum['season4_TeamElimination_FirstWinCount'], colosseum['season4_TeamElimination_KillCount'], colosseum['season4_TeamElimination_LoseCount'], colosseum['season4_TeamElimination_PlayCount'], colosseum['season4_TeamElimination_SecondPlayCount'], colosseum['season4_TeamElimination_SecondWinCount'], colosseum['season4_TeamElimination_ThirdPlayCount'], colosseum['season4_TeamElimination_ThirdWinCount'], colosseum['season4_TeamElimination_TieCount'], colosseum['season4_TeamElimination_VictoryCount'], colosseum['season5_CoOpBattle_AceCount'], colosseum['season5_CoOpBattle_DeathCount'], colosseum['season5_CoOpBattle_KillCount'], colosseum['season5_CoOpBattle_LoseCount'], colosseum['season5_CoOpBattle_PlayCount'], colosseum['season5_CoOpBattle_TieCount'], colosseum['season5_CoOpBattle_VictoryCount'], colosseum['season5_Competitive_AceCount'], colosseum['season5_Competitive_DeathCount'], colosseum['season5_Competitive_KillCount'], colosseum['season5_Competitive_LoseCount'], colosseum['season5_Competitive_PlayCount'], colosseum['season5_Competitive_Rank'], colosseum['season5_Competitive_RankLastMmr'], colosseum['season5_Competitive_RankName'], colosseum['season5_Competitive_TieCount'], colosseum['season5_Competitive_VictoryCount'], colosseum['season5_Deathmatch_AceCount'], colosseum['season5_Deathmatch_DeathCount'], colosseum['season5_Deathmatch_KillCount'], colosseum['season5_Deathmatch_LoseCount'], colosseum['season5_Deathmatch_PlayCount'], colosseum['season5_Deathmatch_TieCount'], colosseum['season5_Deathmatch_VictoryCount'], colosseum['season5_TeamDeathmatch_AceCount'], colosseum['season5_TeamDeathmatch_DeathCount'], colosseum['season5_TeamDeathmatch_KillCount'], colosseum['season5_TeamDeathmatch_LoseCount'], colosseum['season5_TeamDeathmatch_PlayCount'], colosseum['season5_TeamDeathmatch_TieCount'], colosseum['season5_TeamDeathmatch_VictoryCount'], colosseum['season5_TeamElimination_AceCount'], colosseum['season5_TeamElimination_AllKillCount'], colosseum['season5_TeamElimination_DeathCount'], colosseum['season5_TeamElimination_FirstPlayCount'], colosseum['season5_TeamElimination_FirstWinCount'], colosseum['season5_TeamElimination_KillCount'], colosseum['season5_TeamElimination_LoseCount'], colosseum['season5_TeamElimination_PlayCount'], colosseum['season5_TeamElimination_SecondPlayCount'], colosseum['season5_TeamElimination_SecondWinCount'], colosseum['season5_TeamElimination_ThirdPlayCount'], colosseum['season5_TeamElimination_ThirdWinCount'], colosseum['season5_TeamElimination_TieCount'], colosseum['season5_TeamElimination_VictoryCount'], colosseum['season6_CoOpBattle_AceCount'], colosseum['season6_CoOpBattle_DeathCount'], colosseum['season6_CoOpBattle_KillCount'], colosseum['season6_CoOpBattle_LoseCount'], colosseum['season6_CoOpBattle_PlayCount'], colosseum['season6_CoOpBattle_TieCount'], colosseum['season6_CoOpBattle_VictoryCount'], colosseum['season6_Competitive_AceCount'], colosseum['season6_Competitive_DeathCount'], colosseum['season6_Competitive_KillCount'], colosseum['season6_Competitive_LoseCount'], colosseum['season6_Competitive_PlayCount'], colosseum['season6_Competitive_Rank'], colosseum['season6_Competitive_RankLastMmr'], colosseum['season6_Competitive_RankName'], colosseum['season6_Competitive_TieCount'], colosseum['season6_Competitive_VictoryCount'], colosseum['season6_Deathmatch_AceCount'], colosseum['season6_Deathmatch_DeathCount'], colosseum['season6_Deathmatch_KillCount'], colosseum['season6_Deathmatch_LoseCount'], colosseum['season6_Deathmatch_PlayCount'], colosseum['season6_Deathmatch_TieCount'], colosseum['season6_Deathmatch_VictoryCount'], colosseum['season6_TeamDeathmatch_AceCount'], colosseum['season6_TeamDeathmatch_DeathCount'], colosseum['season6_TeamDeathmatch_KillCount'], colosseum['season6_TeamDeathmatch_LoseCount'], colosseum['season6_TeamDeathmatch_PlayCount'], colosseum['season6_TeamDeathmatch_TieCount'], colosseum['season6_TeamDeathmatch_VictoryCount'], colosseum['season6_TeamElimination_AceCount'], colosseum['season6_TeamElimination_AllKillCount'], colosseum['season6_TeamElimination_DeathCount'], colosseum['season6_TeamElimination_FirstPlayCount'], colosseum['season6_TeamElimination_FirstWinCount'], colosseum['season6_TeamElimination_KillCount'], colosseum['season6_TeamElimination_LoseCount'], colosseum['season6_TeamElimination_PlayCount'], colosseum['season6_TeamElimination_SecondPlayCount'], colosseum['season6_TeamElimination_SecondWinCount'], colosseum['season6_TeamElimination_ThirdPlayCount'], colosseum['season6_TeamElimination_ThirdWinCount'], colosseum['season6_TeamElimination_TieCount'], colosseum['season6_TeamElimination_VictoryCount'], colosseum['season7_CoOpBattle_AceCount'], colosseum['season7_CoOpBattle_DeathCount'], colosseum['season7_CoOpBattle_KillCount'], colosseum['season7_CoOpBattle_LoseCount'], colosseum['season7_CoOpBattle_PlayCount'], colosseum['season7_CoOpBattle_TieCount'], colosseum['season7_CoOpBattle_VictoryCount'], colosseum['season7_Competitive_AceCount'], colosseum['season7_Competitive_DeathCount'], colosseum['season7_Competitive_KillCount'], colosseum['season7_Competitive_LoseCount'], colosseum['season7_Competitive_PlayCount'], colosseum['season7_Competitive_Rank'], colosseum['season7_Competitive_RankLastMmr'], colosseum['season7_Competitive_RankName'], colosseum['season7_Competitive_TieCount'], colosseum['season7_Competitive_VictoryCount'], colosseum['season7_Deathmatch_AceCount'], colosseum['season7_Deathmatch_DeathCount'], colosseum['season7_Deathmatch_KillCount'], colosseum['season7_Deathmatch_LoseCount'], colosseum['season7_Deathmatch_PlayCount'], colosseum['season7_Deathmatch_TieCount'], colosseum['season7_Deathmatch_VictoryCount'], colosseum['season7_TeamDeathmatch_AceCount'], colosseum['season7_TeamDeathmatch_DeathCount'], colosseum['season7_TeamDeathmatch_KillCount'], colosseum['season7_TeamDeathmatch_LoseCount'], colosseum['season7_TeamDeathmatch_PlayCount'], colosseum['season7_TeamDeathmatch_TieCount'], colosseum['season7_TeamDeathmatch_VictoryCount'], colosseum['season7_TeamElimination_AceCount'], colosseum['season7_TeamElimination_AllKillCount'], colosseum['season7_TeamElimination_DeathCount'], colosseum['season7_TeamElimination_FirstPlayCount'], colosseum['season7_TeamElimination_FirstWinCount'], colosseum['season7_TeamElimination_KillCount'], colosseum['season7_TeamElimination_LoseCount'], colosseum['season7_TeamElimination_PlayCount'], colosseum['season7_TeamElimination_SecondPlayCount'], colosseum['season7_TeamElimination_SecondWinCount'], colosseum['season7_TeamElimination_ThirdPlayCount'], colosseum['season7_TeamElimination_ThirdWinCount'], colosseum['season7_TeamElimination_TieCount'], colosseum['season7_TeamElimination_VictoryCount']]
+        cursor.execute(sql, values)
+        db.commit()
+        db.close()
+    except Exception as e:
+        db.rollback()
+        db.close()
+        print_insert_db_exception(colosseum, e)
+        raise e
+
+## 10. all ###
+def insert_all_table(df):
+    characterCode = df['characterCode'][0]
+    try:
+        insert_profile_stats_table(characterCode, df['ArmoryProfile'][0])
+        insert_avatar_table(characterCode, df['ArmoryAvatars'][0])
+        insert_equipment_accessory_sequipment_table(characterCode, df['ArmoryEquipment'][0])
+        insert_skill_table(characterCode, df['ArmorySkills'][0])
+        insert_gem_table(characterCode, df['ArmoryGem'][0])
+        insert_engraving_table(characterCode, df['ArmoryEngraving'][0])
+        insert_card_table(characterCode, df['ArmoryCard'][0])
+        insert_collectible_table(characterCode, df['Collectibles'][0])
+        insert_colosseum_table(characterCode, df['ColosseumInfo'][0])
+    except Exception as e:
+        raise e
+
+# predict df
+def get_predict_df(characterName):
+    tables = ['profile_table','accessory_table', 'avatar_table', 'card_table', 'engraving_table', 
+            'equipment_table', 'gem_table', 'skill_table', 'stats_table']
+    accessories = ['목걸이', '귀걸이1', '귀걸이2', '반지1', '반지2']
+    accessory_column = ['_quality', '_grade', '_tier']
+    avatars = ['무기1', '무기2', '상의1', '상의2', '하의1', '하의2']
+    avatar_column = ['_grade']
+    equipments = ['무기', '투구', '어깨', '상의', '하의', '장갑']
+    equipment_column = ['_quality', '_grade', '_setLevel']
+    gem_column = ['_grade', '_level', '_tier']
+    stat_column = ['치명', '특화', '신속', '제압', '인내', '숙련']
+
+    sql = f"""SELECT profile_table.characterCode, profile_table.expeditionLevel, profile_table.totalSkillPoint,
+    profile_table.characterLevel, profile_table.itemMaxLevel,
+
+    {', '.join(f"accessory_table.{accessory}{column}" for accessory in accessories for column in accessory_column)},
+
+    {', '.join(f"avatar_table.{avatar}{column}" for avatar in avatars for column in avatar_column)},
+
+    {', '.join(f"card_table.setName{i}, card_table.setPoint{i}" for i in range(1, 5))},
+
+    {', '.join(f"engraving_table.grantName{i}, engraving_table.grantPoint{i}" for i in range(1, 3))},
+    {', '.join(f"engraving_table.engraving{i}_name, engraving_table.engraving{i}_level" for i in range(1, 12))},
+
+    {', '.join(f"equipment_table.{equipment}{column}" for equipment in equipments for column in equipment_column)},
+
+    {', '.join(f"gem_table.gem{i}{column}" for i in range(1, 12) for column in gem_column)},
+
+    {', '.join(f"skill_table.skill{i}_tripod{j}_point" for i in range(1, 17) for j in range(1, 4))},
+
+    {', '.join(f"stats_table.{column}_값" for column in stat_column)}
+
+    FROM profile_table
+    {' '.join(f"INNER JOIN {tables[i+1]} ON {tables[i]}.characterCode = {tables[i+1]}.characterCode"
+    for i in range(len(tables)-1))}
+    WHERE lostark.profile_table.characterName = '{characterName}';
+    """
+    db, cursor = get_db_cursor()
+    cursor.execute(sql)
+    df = pd.DataFrame(cursor.fetchall())
+    db.close()
+
+    columns = ["characterCode", "expeditionLevel", "totalSkillPoint", "characterLevel", "itemMaxLevel"]
+    for accessory in accessories:
+        for column in accessory_column:
+            columns.append(f"{accessory}{column}")
+    for avatar in avatars :
+        for column in avatar_column:
+            columns.append(f"avatar_{avatar}{column}") 
+    for i in range(1, 5):
+        columns.append(f"card_setName{i}")
+        columns.append(f"card_setPoint{i}")
+    for i in range(1, 3):
+        columns.append(f"engraving_grantName{i}")
+        columns.append(f"engraving_grantPoint{i}")
+    for i in range(1, 12):
+        columns.append(f"engraving{i}_name")
+        columns.append(f"engraving{i}_level")
+    for equipment in equipments:
+        for column in equipment_column:
+            columns.append(f"equipment_{equipment}{column}")
+    for i in range(1, 12):
+        for column in gem_column:
+            columns.append(f"gem{i}{column}")
+    for i in range(1, 17):
+        for j in range(1, 4):
+            columns.append(f"skill{i}_tripod{j}_point")
+    for column in stat_column:
+        columns.append(f"{column}_값")
+    df.columns = columns
+
+    from sklearn.preprocessing import LabelEncoder
+    grade_label = joblib.load('./label/grade_label.pkl')
+    card_label = joblib.load('./label/card_label.pkl')
+    engraving_label = joblib.load('./label/engraving_label.pkl')
+
+    df['itemMaxLevel'] = df['itemMaxLevel'].astype('float64')
+    for accessory in accessories:
+        df[f'{accessory}_quality'] = df[f'{accessory}_quality'].fillna(-1).astype('int64')
+        df[f'{accessory}_grade'] = grade_label.transform(df[f'{accessory}_grade'].fillna('None'))
+        df[f'{accessory}_tier'] = df[f'{accessory}_tier'].fillna(-1).astype('int64')
+    for avatar in avatars :
+        df[f"avatar_{avatar}_grade"] =  grade_label.transform(df[f"avatar_{avatar}_grade"].fillna('None'))
+    for i in range(1, 5):
+        df[f"card_setName{i}"] = card_label.transform(df[f"card_setName{i}"].fillna('None'))
+        df[f"card_setPoint{i}"] = df[f"card_setPoint{i}"].fillna(-1).astype('int64')
+    for i in range(1, 3):
+        df[f"engraving_grantName{i}"] = engraving_label.transform(df[f"engraving_grantName{i}"].fillna('None'))
+        df[f"engraving_grantPoint{i}"] = df[f"engraving_grantPoint{i}"].fillna('-1').astype('int64')
+    for i in range(1, 12):
+        df[f"engraving{i}_name"] = engraving_label.transform(df[f"engraving{i}_name"].fillna('None'))
+        df[f"engraving{i}_level"] = df[f"engraving{i}_level"].fillna(-1).astype('int64')
+    for equipment in equipments:
+        df[f"equipment_{equipment}_grade"] = grade_label.transform(df[f"equipment_{equipment}_grade"].fillna('None'))  
+        df[f"equipment_{equipment}_setLevel"] = df[f"equipment_{equipment}_setLevel"].fillna(-1).astype('int64')
+        df[f"equipment_{equipment}_quality"] = df[f"equipment_{equipment}_quality"].fillna(-1).astype('int64')
+    for i in range(1, 12):
+        df[f"gem{i}_grade"] = grade_label.transform(df[f"gem{i}_grade"].fillna('None'))
+        df[f"gem{i}_level"] = df[f"gem{i}_level"].fillna(-1).astype('int64')
+        df[f"gem{i}_tier"] = df[f"gem{i}_tier"].fillna(-1).astype('int64')
+    for i in range(1, 17):
+        for j in range(1, 4):
+            df[f"skill{i}_tripod{j}_point"] = df[f"skill{i}_tripod{j}_point"].fillna(-1).astype('int64')
+    
+    return df
 
 
-
-
-
-
-
-
-
-### regex pattern ###
+## regex pattern
 float_pattern = re.compile(r'\d+\.\d+')
 int_pattern = re.compile(r'\d+')
 # armory skill
@@ -906,94 +1447,18 @@ archemy_pattern = re.compile(r'\](.*?)Lv\.(\d+)')
 plus_pattern = re.compile(r'([^\s]+)\s*\+([\d]+)')
 bracelet_pattern = re.compile(r'\[.*?\[')
 
-## stats keys
-stats = {'characterCode' : None,
-            '치명_값':None, '치명_내실증가량':None, '치명_치명타_적중률(%)':None,
-            '특화_값':None, '특화_내실증가량':None, '특화_각성스킬_피해량(%)':None, '특화_효과1':None,
-            '특화_효과2':None, '특화_효과3':None,
-            '제압_값':None, '제압_내실증가량':None, '제압_피해증가량(%)':None,
-            '신속_값':None, '신속_내실증가량':None, '신속_공격속도(%)':None, '신속_이동속도(%)':None,
-            '신속_스킬_재사용대기시간_감소율(%)':None,
-            '인내_값':None, '인내_내실증가량': None, '인내_물리방어력(%)':None, '인내_마법방어력(%)':None,
-            '인내_보호막효과(%)':None, '인내_생명력_회복효과(%)':None,
-            '숙련_값':None, '숙련_내실증가량':None, '숙련_상태이상_공격_지속시간(%)':None,
-            '숙련_상태이상_피해_지속시간(%)':None, '숙련_무력화_피해량(%)':None,
-            '최대생명력_값':None, '최대생명력_체력':None, '최대생명력_생명활성력(%)':None,
-            '공격력_값':None, '공격력_기본공격력':None, '공격력_증감량':None}
 
-## avatar keys
-avatar_parts = ['무기1', '무기2', '머리', '상의1', '상의2', '하의1', '하의2', '얼굴1', '얼굴2', '악기', '이동효과'] 
-dic_keys = ['grade', 'isInner', 'isSet', 'name', 'avatarType', 'avatarType2', 'availableClass', 
-            'availableTrade', 'attribution', 'statEffect(%)', '매력', '지성', '담력', '친절', 'availableSale', 
-            'dyeable', 'decomposable']
-avatars = {
-    'characterCode': None,
-}
-for part in avatar_parts:
-    for key in dic_keys:
-        avatars[f'{part}_{key}'] = None
 
-## equipment keys
-equipment_parts = ['무기', '투구', '상의', '하의', '어깨', '장갑']
-accessory_parts = ['목걸이', '귀걸이1', '귀걸이2', '반지1', '반지2'] # + 팔찌, 어빌리티 스톤
-sequipment_parts = ['나침반','부적','문장']
-# 무기 장비
-aedic_keys = ['grade', 'name', 'type', 'quality', 'tier', 'itemLevel', 'ATK', 'AD(%)', 
-              'setName', 'setLevel', 'REXP', 'esther', 'estherEffect','ella', 'reinforcementStep']
-# 방어구 장비
-dedic_keys = ['grade', 'name', 'type', 'quality', 'tier', 'itemLevel', 
-              'SAI', 'BDEF', 'BMDEF', 'BHP', 'ADEF', 'AMDEF', 'AHP', 'AHPP',
-              'setName', 'setLevel', 'REXP', 'reinforcementStep',
-             'alchemyName1', 'alchemyName2', 'alchemyPoint1', 'alchemyPoint2']
-# 악세서리 장비
-adic_keys = ['grade', 'name', 'quality', 'tier', 'limitLevel', 'availableTrade', 
-             'SAI', 'HP', '치명', '특화', '신속', '제압', '인내', '숙련',
-             'engraving1_name', 'engraving1_point', 'engraving2_name', 'engraving2_point', 
-             'dengraving_name', 'dengraving_point', 'acquirablePlace']
 
-# 특수장비
-sedic_keys = ['grade', 'name']
 
-# 장비
-equipments = {
-    'characterCode': None,
-}
-# 악세서리
-accessories = {
-    'characterCode': None,
-    '팔찌_grade':None, '팔찌_name':None, '팔찌_tier':None, '팔찌_effect1':None, '팔찌_effect2':None,
-    '팔찌_effect3':None, '팔찌_effect4':None, '팔찌_effect5':None, '팔찌_canRerollNum':None, '팔찌_canGivenNum':None,
-    'AS_grade':None, 'AS_name':None, 'AS_tier':None, 'AS_HP': None, 'AS_BHP':None, 'AS_engraving1_name':None, 
-    'AS_engraving1_point':None, 'AS_engraving2_name':None, 'AS_engraving2_point':None,
-    'AS_dengraving_name':None, 'AS_dengraving_point':None, 'AS_setLevel' :None
-}
-# 특수 장비
-sequipments = {
-    'characterCode':None, 
-}
-for part in equipment_parts:
-    if part == '무기':
-        for key in aedic_keys:
-            equipments[f'{part}_{key}'] = None
-    else:
-        for key in dedic_keys:
-            equipments[f'{part}_{key}'] = None
-for part in accessory_parts:
-    for key in adic_keys:
-        accessories[f'{part}_{key}'] = None
-for part in sequipment_parts:
-    for key in sedic_keys:
-        sequipments[f'{part}_{key}'] = None
 
-## skill keys
-skill_parts = [f'skill{i}' for i in range(1,17)] # 16개 스킬만 고려
-dic_keys = ['name', 'level', 'cooltime','tripod1_name', 'tripod1_point', 'tripod2_name', 'tripod2_point',
-            'tripod3_name', 'tripod3_point', 'runeName', 'runeGrade','headAttack', 'backAttack', 
-            'partBreak', 'stagger', 'counter', '마나', '배터리', '버블', '충격', '기력', '내공', '영혼석' 
-            '경직면역', '피격면역', '상태이상면역']
-skills = {
-    'characterCode': None,
-}
-for part in skill_parts:
-    for key in dic_keys:
-        skills[f'{part}_{key}'] = None
+
+
+
+
+
+
+
+
+
+
