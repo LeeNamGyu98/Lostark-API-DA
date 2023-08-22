@@ -27,7 +27,7 @@ def get_db_cursor():
 
 # db, api key
 def get_admin_key():
-    with open('./key.json', 'r') as file:
+    with open("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\key.json", 'r') as file:
         return json.load(file)
     
 #! eval은 보안에 위험한 코드이나 현 단계에서는 넘어감(문자로 된 것을 코드화 하는 함수)
@@ -91,10 +91,10 @@ def delete_table(table):
 
 # API 응답이 None일 경우 삭제
 def remove_characterName(characterName_list, idx, error):
-    with open("./character/removed_characterName_list.txt", "a", encoding="utf-8") as f:
+    with open("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\character\\removed_characterName_list.txt", "a", encoding="utf-8") as f:
         f.write(str(characterName_list[idx]) + f": {error}\n")
     characterName_list.remove(characterName_list[idx])
-    with open("./character/characterName_list.txt", "w", encoding="utf-8") as f:
+    with open("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\character\\characterName_list.txt", "w", encoding="utf-8") as f:
         f.write(str(characterName_list))
 
 # character API 호출
@@ -156,8 +156,11 @@ def insert_character_data(characterName):
     resp = get_character_responses(characterName)
     for character in resp: # sub character
         profile_responses = get_total_profile_responses(character['CharacterName'])
-        values = get_profile_values(profile_responses)
-        insert_raw_character_data(values)
+        if profile_responses != None:
+            values = get_profile_values(profile_responses)
+            insert_raw_character_data(values) # 전처리 전
+            character_df = get_df_all_raw_table(character['CharacterName'])
+            insert_all_table(character_df) # 전처리 후
 
 # 전처리 전 db의 table에서 특정 column의 값을 반환
 def get_df_raw_table(column, idx=-1):
@@ -1402,9 +1405,9 @@ def get_predict_df(characterName):
     df.columns = columns
 
     from sklearn.preprocessing import LabelEncoder
-    grade_label = joblib.load('./label/grade_label.pkl')
-    card_label = joblib.load('./label/card_label.pkl')
-    engraving_label = joblib.load('./label/engraving_label.pkl')
+    grade_label = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\label\\card_label.pkl")
+    card_label = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\label\\grade_label.pkl")
+    engraving_label = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\label\\engraving_label.pkl")
 
     df['itemMaxLevel'] = df['itemMaxLevel'].astype('float64')
     for accessory in accessories:
