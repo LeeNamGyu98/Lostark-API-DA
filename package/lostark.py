@@ -777,16 +777,16 @@ def insert_equipment_accessory_sequipment_table(characterCode, data):
                             sv = sv.replace('효과 부여 가능', '', 1)
                         if canGivenNum == 1:
                             accessory['팔찌_canGivenNum'] = 0
-                        for v in plus_pattern.findall(sv):
-                            v = list(v)
-                            v[0] = v[0].replace('회복량', '전투 중 생명력 회복량').replace('마나', '최대 마나')\
+                        for pv in plus_pattern.findall(sv):
+                            pv = list(pv)
+                            pv[0] = pv[0].replace('회복량', '전투 중 생명력 회복량').replace('마나', '최대 마나')\
                             .replace('공격력', '무기 공격력').replace('생명력', '최대 생명력')
-                            if v[0] == '방어력':
+                            if pv[0] == '방어력':
                                 svidx = sv.find(f'{v[0]} +{v[1]}')
-                                v[0] = v[0].replace('방어력', f'{sv[svidx-3:svidx]}방어력')
-                            accessory[f'팔찌_effect{effect_count}'] = str(v[0]) + ' +' + str(v[1])
+                                pv[0] = pv[0].replace('방어력', f'{sv[svidx-3:svidx]}방어력')
+                            accessory[f'팔찌_effect{effect_count}'] = str(pv[0]) + ' +' + str(pv[1])
                             effect_count += 1
-                            sv = sv.replace(f'{v[0]} +{v[1]}', '')
+                            sv = sv.replace(f'{pv[0]} +{pv[1]}', '')
                         while len(bracelet_pattern.findall(sv)) != 0:
                             accessory[f'팔찌_effect{effect_count}'] = bracelet_pattern.findall(sv)[0][:-2].strip()
                             sv = sv.replace(bracelet_pattern.findall(sv)[0][:-2], '')
