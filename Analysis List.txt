@@ -17,6 +17,8 @@ Collectible:
 engraving:
 직업별 각인 세팅
 
+gem:
+서폿 멸화 채용 비율
 
 profile:
 원정대 레벨 분포
