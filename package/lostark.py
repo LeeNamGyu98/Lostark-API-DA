@@ -1366,7 +1366,7 @@ def get_predict_df(characterName):
     {', '.join(f"stats_table.{column}_값" for column in stat_column)}
 
     FROM profile_table
-    {' '.join(f"INNER JOIN {tables[i+1]} ON {tables[i]}.characterCode = {tables[i+1]}.characterCode"
+    {' '.join(f"LEFT JOIN {tables[i+1]} ON {tables[i]}.characterCode = {tables[i+1]}.characterCode"
     for i in range(len(tables)-1))}
     WHERE lostark.profile_table.characterName = '{characterName}';
     """
@@ -1403,12 +1403,14 @@ def get_predict_df(characterName):
     for column in stat_column:
         columns.append(f"{column}_값")
     df.columns = columns
-
+    display(df)
+    
+    
     from sklearn.preprocessing import LabelEncoder
-    grade_label = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\label\\card_label.pkl")
-    card_label = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\label\\grade_label.pkl")
+    grade_label = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\label\\grade_label.pkl")
+    card_label = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\label\\card_label.pkl")
     engraving_label = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\label\\engraving_label.pkl")
-
+    
     df['itemMaxLevel'] = df['itemMaxLevel'].astype('float64')
     for accessory in accessories:
         df[f'{accessory}_quality'] = df[f'{accessory}_quality'].fillna(-1).astype('int64')
@@ -1436,7 +1438,72 @@ def get_predict_df(characterName):
     for i in range(1, 17):
         for j in range(1, 4):
             df[f"skill{i}_tripod{j}_point"] = df[f"skill{i}_tripod{j}_point"].fillna(-1).astype('int64')
+        
+#     from sklearn.preprocessing import StandardScaler
+#     scaler = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\Scaler\\Scaler.pkl")
+
+#     df_scale = scaler.transform(df)
+#     df_scale = pd.DataFrame(df_scale, columns=df.columns)
     
+#     dfc = df.copy()
+#     from sklearn.decomposition import PCA
+#     # gem grade
+#     pca = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\PCA\\gem_grade_PCA.pkl")
+#     columns = [f'gem{i}_grade' for i in range(1, 12)]
+#     df_pca = pca.transform(df_scale[columns])
+#     dfc.drop(columns, axis=1, inplace=True)
+#     df_pca = pd.DataFrame(df_pca, columns=['gem_grade_PCA1', 'gem_grade_PCA2'])
+#     dfc = pd.concat([dfc, df_pca], axis=1)
+
+#     # gem tier
+#     pca = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\PCA\\gem_tier_PCA.pkl")
+#     columns = [f'gem{i}_tier' for i in range(1, 12)]
+#     df_pca = pca.transform(df_scale[columns])
+#     dfc.drop(columns, axis=1, inplace=True)
+#     df_pca = pd.DataFrame(df_pca, columns=['gem_tier_PCA1', 'gem_tier_PCA2', 'gem_tier_PCA3'])
+#     dfc = pd.concat([dfc, df_pca], axis=1)
+
+#     # gem level
+#     pca = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\PCA\\gem_level_PCA.pkl")
+#     columns = [f'gem{i}_level' for i in range(1, 12)]
+#     df_pca = pca.transform(df_scale[columns])
+#     dfc.drop(columns, axis=1, inplace=True)
+#     df_pca = pd.DataFrame(df_pca, columns=['gem_level_PCA1', 'gem_level_PCA2'])
+#     dfc = pd.concat([dfc, df_pca], axis=1)
+    
+#     # skill tripod point
+#     pca = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\PCA\\skill_PCA.pkl")
+#     columns = [f'skill{i}_tripod{j}_point' for i in range(9, 17) for j in range(1, 4)]
+#     df_pca = pca.transform(df_scale[columns])
+#     dfc.drop(columns, axis=1, inplace=True)
+#     df_pca = pd.DataFrame(df_pca, columns=['skill_tripod_point_PCA1', 'skill_tripod_point_PCA2',
+#         'skill_tripod_point_PCA3', 'skill_tripod_point_PCA4'])
+#     dfc = pd.concat([dfc, df_pca], axis=1)
+
+#     # equipment grade
+#     pca = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\PCA\\equipment_grade_PCA.pkl")
+#     columns = [f'equipment_{e}_grade' for e in equipments]
+#     df_pca = pca.transform(df_scale[columns])
+#     df.drop(columns, axis=1, inplace=True)
+#     df_pca = pd.DataFrame(df_pca, columns=['equipment_grade_PCA1'])
+#     df = pd.concat([df, df_pca], axis=1)
+
+#     # euqipment setLevel
+#     pca = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\PCA\\equipment_setLevel_PCA.pkl")
+#     columns = [f'equipment_{e}_setLevel' for e in equipments]
+#     df_pca = pca.transform(df_scale[columns])
+#     dfc.drop(columns, axis=1, inplace=True)
+#     df_pca = pd.DataFrame(df_pca, columns=['equipment_setLevel_PCA1', 'equipment_setLevel_PCA2'])
+#     dfc = pd.concat([dfc, df_pca], axis=1)
+
+#     # euqipment quality
+#     pca = joblib.load("C:\\Users\\user\\Code_Files_Jupyter\\Lostark\\Lostark-API-DA\\PCA\\equipment_quality_PCA.pkl")
+#     columns = [f'equipment_{e}_quality' for e in equipments]
+#     df_pca = pca.transform(df_scale[columns])
+#     dfc.drop(columns, axis=1, inplace=True)
+#     df_pca = pd.DataFrame(df_pca, columns=['equipment_quality_PCA1', 'equipment_quality_PCA2'])
+#     dfc = pd.concat([dfc, df_pca], axis=1)
+#     display(dfc)
     return df
 
 
